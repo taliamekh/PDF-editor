@@ -22,6 +22,8 @@ Some PDFs store every letter as a vector drawing, without any text or original f
 
 Outlined text defaults to upright fonts. Italic matching requires consistent slanted stems in the original vector shapes and a clear visual match advantage over upright fonts. The chosen style stays fixed during editing. Genuine text objects retain their existing embedded font, including genuine italics.
 
+Bold matching also requires a clear shape advantage and ink coverage closer to bold strokes than regular strokes. Foreground contrast is normalized so gray or colored lettering keeps its weight. A near-tie in word shape cannot turn a regular name bold beside a genuine bold label.
+
 OCR word coordinates split visible gaps into separate fields, retaining ordinary spacing within a phrase. Native text objects also split at large glyph gaps; editing a subfield locks the surrounding glyph positions. Selecting a field opens the on-page caret.
 
 Saving removes only the selected field's original filled letter paths, inserts real PDF text with the matched font, reopens the export, checks the replacement, and verifies pixels outside that field. Before adding text, pdf-lib combines the selected page's content streams inside a balanced graphics-state wrapper so an inherited transform cannot move new text during export. The original source bytes remain untouched. Existing backgrounds and rules remain in place. Fields that cannot be isolated safely are rejected. Genuine text on mixed pages still uses the original-text mode.
@@ -60,6 +62,8 @@ The deployed app is static: serve `dist/` over HTTPS. The font engine, OCR worke
 `scripts/create-spaced-fixtures.py` adds separated labels/values and a page-level flipped transform. Render `spaced-outlines.pdf` at 216 DPI, then run `node scripts/verify-spaced.mjs` to check field separation, preservation of sibling positions, multiple edits, rollback after an injected export failure, and opening another PDF afterwards. Browser checks cover clicking away, switching fields, error recovery, mouse wheel and pinch input, and a separate-copy download.
 
 `scripts/create-font-style-fixture.py` and `node scripts/verify-font-style.mjs` verify that short upright fields remain upright, original outlined italics retain their style, and native embedded italic fonts and sizes survive edit/export.
+
+`scripts/create-font-weight-fixture.py` and `node scripts/verify-font-weight.mjs` verify regular names beside bold labels, genuine bold, short fields, gray text, and original regular/bold embedded fonts through editing and export.
 
 `node scripts/verify-movement.mjs` verifies native, separated, italic and outlined moves, page/box alignment and snapping, editing after a move, sibling positions, downloaded/reopened positions, undo, bounds, and rollback after an injected export failure. Browser checks cover pointer dragging, alignment controls, autosaving when changing tools, and PDF downloads.
 

@@ -152,6 +152,16 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     }
     return difference/(w*h)+Math.abs(Math.log((candidate.width/candidate.height)/(source.width/source.height)))*.2;
   }
+  inkDensity(mask) {
+    let peak=0,sum=0;for(const value of mask.data){peak=Math.max(peak,value);sum+=value;}
+    // Normalize foreground contrast so colored letters retain their weight.
+    return peak?sum/(peak*mask.data.length):0;
+  }
+  normalizeContrast(mask) {
+    if(!mask)return null;
+    let peak=0;for(const value of mask.data)peak=Math.max(peak,value);
+    return !peak||peak===255?mask:{...mask,data:Uint8Array.from(mask.data,value=>Math.round(value*255/peak))};
+  }
   outlinedItalic(rect) {
     const M=this.e.M,p=M._malloc(24),stems=[];
     try{
@@ -184,26 +194,32 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     return slanted/total>=.7;
   }
   matchFont(line,frame) {
-    const source=this.trimMask(this.croppedMask(frame.image,line.rect,frame.scale));
+    const source=this.normalizeContrast(this.trimMask(this.croppedMask(frame.image,line.rect,frame.scale)));
     if(!source)return {fontName:'Helvetica',size:Math.max(6,line.rect.h/.72)};
-    let best=null,upright=null,slanted=null;
+    const sourceDensity=this.inkDensity(source),matches=[];
     const italic=this.outlinedItalic(line.rect);
     const candidates=['Helvetica','Times-Roman','Helvetica-Bold','Times-Bold','Courier',...(italic?['Helvetica-Oblique','Times-Italic','Helvetica-BoldOblique','Times-BoldItalic','Courier-Oblique']:[])];
     for(const fontName of candidates) {
       const handle=this.nativeText(line.text,fontName,12);
-      const candidate=this.trimMask(this.textBitmap(handle,3));
+      const candidate=this.normalizeContrast(this.trimMask(this.textBitmap(handle,3)));
       if(candidate) {
+        const density=this.inkDensity(candidate),weightError=Math.abs(sourceDensity-density);
         const score=this.maskDistance(source,candidate);
         const size=Math.max(5,Math.min(80,12*(.75*(source.width/frame.scale)/(candidate.width/3)+.25*(source.height/frame.scale)/(candidate.height/3))));
-        const match={fontName,size:Math.round(size*100)/100,score};
-        if(!best||score<best.score)best=match;
-        if(/Italic|Oblique/.test(fontName)){if(!slanted||score<slanted.score)slanted=match;}
-        else if(!upright||score<upright.score)upright=match;
+        matches.push({fontName,size:Math.round(size*100)/100,score,weightError});
       }
       this.e.M._FPDFPageObj_Destroy(handle);
     }
-    // Require both slanted stems and a clear visual advantage over upright fonts.
-    return (slanted&&upright&&slanted.score+.025<upright.score?slanted:upright)||best||{fontName:'Helvetica',size:Math.max(6,line.rect.h/.72)};
+    const best=items=>items.sort((a,b)=>a.score-b.score)[0];
+    const chooseWeight=items=>{
+      const regular=best(items.filter(m=>! /Bold/.test(m.fontName))),bold=best(items.filter(m=>/Bold/.test(m.fontName)));
+      // A similar silhouette must not turn regular letters bold. Require a
+      // clear shape advantage AND source ink coverage closer to bold strokes.
+      return bold&&regular&&bold.score+.025<regular.score&&bold.weightError+.015<regular.weightError?bold:regular||bold;
+    };
+    const upright=chooseWeight(matches.filter(m=>! /Italic|Oblique/.test(m.fontName))),slanted=chooseWeight(matches.filter(m=>/Italic|Oblique/.test(m.fontName)));
+    const match=slanted&&upright&&slanted.score+.025<upright.score?slanted:upright||slanted;
+    return match?{fontName:match.fontName,size:match.size}:{fontName:'Helvetica',size:Math.max(6,line.rect.h/.72)};
   }
   renderOcr() {
     const scale=Math.min(3,4096/Math.max(this.e.pageWidth,this.e.pageHeight)),img=this.e.renderPage(scale);

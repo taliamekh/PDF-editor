@@ -1,0 +1,19 @@
+{
+  "name": "pdf-text-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "test": "node scripts/verify-engine.mjs"
+  },
+  "dependencies": {
+    "bentopdf-pdfium": "file:vendor/bentopdf-pdfium-813903c93c75.tgz"
+  },
+  "devDependencies": {
+    "vite": "8.0.16"
+  }
+}

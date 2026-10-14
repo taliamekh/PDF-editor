@@ -1,0 +1,37 @@
+from pathlib import Path
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+out = Path(__file__).resolve().parents[1] / 'test-output'
+out.mkdir(exist_ok=True)
+font_path = Path(r'C:\Windows\Fonts\arial.ttf')
+pdfmetrics.registerFont(TTFont('EmbeddedArial', str(font_path)))
+c = canvas.Canvas(str(out / 'fixture.pdf'), pagesize=(612, 792))
+c.setFillColorRGB(.13, .19, .22)
+c.setFont('Helvetica-Bold', 22)
+c.drawString(60, 718, 'PDF typography test')
+c.setFont('EmbeddedArial', 13.5)
+c.drawString(60, 666, 'Original sample text 12345.')
+c.setFont('EmbeddedArial', 11)
+c.drawString(60, 628, 'The quick brown fox jumps over the lazy dog.')
+c.setFont('Helvetica', 12)
+c.drawString(60, 588, 'Standard font example.')
+c.setStrokeColorRGB(.2, .55, .5)
+c.line(60, 563, 520, 563)
+c.setFillColorRGB(.9,.97,.95)
+c.rect(55, 493, 470, 40, fill=1, stroke=0)
+c.setFillColorRGB(.1,.25,.2)
+c.setFont('EmbeddedArial', 14)
+c.drawString(60, 507, 'Text on a coloured background.')
+c.saveState()
+c.translate(400,250)
+c.rotate(25)
+c.setFont('EmbeddedArial',12)
+c.drawString(0,0,'Rotated text sample.')
+c.restoreState()
+c.showPage()
+c.setFont('EmbeddedArial',13.5)
+c.drawString(60,690,'Second page text stays unchanged.')
+c.save()
+print(out / 'fixture.pdf')

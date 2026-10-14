@@ -151,21 +151,58 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     }
     return difference/(w*h)+Math.abs(Math.log((candidate.width/candidate.height)/(source.width/source.height)))*.2;
   }
+  outlinedItalic(rect) {
+    const M=this.e.M,p=M._malloc(24),stems=[];
+    try{
+      for(const path of this.outlinePaths(rect)){
+        M._FPDFPageObj_GetMatrix(path.handle,p);
+        const matrix=Array.from(M.HEAPF32.subarray(p>>2,(p>>2)+6)),screen=this.screenMatrix(matrix);
+        const add=(a,b)=>{
+          if(!a||!b)return;
+          const x=b[0]-a[0],y=b[1]-a[1],dx=screen[0]*x-screen[2]*y,dy=screen[1]*x-screen[3]*y;
+          if(Math.abs(dy)<Math.max(1,path.box.h*.35))return;
+          const slope=-dx/dy;
+          if(Math.abs(slope)<=.4)stems.push({slope,weight:Math.abs(dy)});
+        };
+        let previous=null,start=null;
+        for(let i=0;i<M._FPDFPath_CountSegments(path.handle);i++){
+          const segment=M._FPDFPath_GetPathSegment(path.handle,i);
+          M._FPDFPathSegment_GetPoint(segment,p,p+4);
+          const point=[M.HEAPF32[p>>2],M.HEAPF32[(p+4)>>2]],type=M._FPDFPathSegment_GetType(segment);
+          if(type===2)start=point;
+          else if(type===0)add(previous,point);
+          if(M._FPDFPathSegment_GetClose(segment))add(point,start);
+          previous=point;
+        }
+      }
+    }finally{M._free(p);}
+    if(stems.length<2)return false;
+    const total=stems.reduce((sum,s)=>sum+s.weight,0);
+    const slanted=stems.filter(s=>s.slope>=.1&&s.slope<=.4).reduce((sum,s)=>sum+s.weight,0);
+    // A similar word silhouette alone must never switch upright text to italics.
+    return slanted/total>=.7;
+  }
   matchFont(line,frame) {
     const source=this.trimMask(this.croppedMask(frame.image,line.rect,frame.scale));
     if(!source)return {fontName:'Helvetica',size:Math.max(6,line.rect.h/.72)};
-    let best=null;
-    for(const fontName of ['Helvetica','Times-Roman','Helvetica-Bold','Times-Bold','Times-Italic','Helvetica-Oblique','Courier']) {
+    let best=null,upright=null,slanted=null;
+    const italic=this.outlinedItalic(line.rect);
+    const candidates=['Helvetica','Times-Roman','Helvetica-Bold','Times-Bold','Courier',...(italic?['Helvetica-Oblique','Times-Italic','Helvetica-BoldOblique','Times-BoldItalic','Courier-Oblique']:[])];
+    for(const fontName of candidates) {
       const handle=this.nativeText(line.text,fontName,12);
       const candidate=this.trimMask(this.textBitmap(handle,3));
       if(candidate) {
         const score=this.maskDistance(source,candidate);
         const size=Math.max(5,Math.min(80,12*(.75*(source.width/frame.scale)/(candidate.width/3)+.25*(source.height/frame.scale)/(candidate.height/3))));
-        if(!best||score<best.score)best={fontName,size:Math.round(size*100)/100,score};
+        const match={fontName,size:Math.round(size*100)/100,score};
+        if(!best||score<best.score)best=match;
+        if(/Italic|Oblique/.test(fontName)){if(!slanted||score<slanted.score)slanted=match;}
+        else if(!upright||score<upright.score)upright=match;
       }
       this.e.M._FPDFPageObj_Destroy(handle);
     }
-    return best||{fontName:'Helvetica',size:Math.max(6,line.rect.h/.72)};
+    // Require both slanted stems and a clear visual advantage over upright fonts.
+    return (slanted&&upright&&slanted.score+.025<upright.score?slanted:upright)||best||{fontName:'Helvetica',size:Math.max(6,line.rect.h/.72)};
   }
   renderOcr() {
     const scale=Math.min(3,4096/Math.max(this.e.pageWidth,this.e.pageHeight)),img=this.e.renderPage(scale);

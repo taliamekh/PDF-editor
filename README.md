@@ -14,6 +14,8 @@ The original-text mode never substitutes a font or shrinks text to fit. There ar
 
 Some PDFs store every letter as a vector drawing, without any text or original font information. For these pages, bundled Tesseract.js performs English OCR locally. The editor compares the recognized lettering against PDFium's standard font families and estimates a matching size. The toolbar labels these edits as approximate, and the recognized words should be checked.
 
+Outlined text defaults to upright fonts. Italic matching requires consistent slanted stems in the original vector shapes and a clear visual match advantage over upright fonts. The chosen style stays fixed during editing. Genuine text objects retain their existing embedded font, including genuine italics.
+
 OCR word coordinates split visible gaps into separate fields, retaining ordinary spacing within a phrase. Native text objects also split at large glyph gaps; editing a subfield locks the surrounding glyph positions. Selecting a field opens the on-page caret.
 
 Saving removes only the selected field's original filled letter paths, inserts real PDF text with the matched font, reopens the export, checks the replacement, and verifies pixels outside that field. Before adding text, pdf-lib combines the selected page's content streams inside a balanced graphics-state wrapper so an inherited transform cannot move new text during export. The original source bytes remain untouched. Existing backgrounds and rules remain in place. Fields that cannot be isolated safely are rejected. Genuine text on mixed pages still uses the original-text mode.
@@ -50,6 +52,8 @@ The deployed app is static: serve `dist/` over HTTPS. The font engine, OCR worke
 `scripts/create-outlined-fixture.py` uses ReportLab and FontTools to create synthetic vector lettering. Render it to `test-output/outlined-fixture.png` at 216 DPI, then run `node scripts/verify-outlined.mjs` to check recognition, font matching, path removal, repeated edits, surrounding pixel preservation, undo, and reopening mixed text/outline PDFs. Browser QA also checks an active caret, keyboard deletion/typing, and downloading a pending edit.
 
 `scripts/create-spaced-fixtures.py` adds separated labels/values and a page-level flipped transform. Render `spaced-outlines.pdf` at 216 DPI, then run `node scripts/verify-spaced.mjs` to check field separation, preservation of sibling positions, multiple edits, rollback after an injected export failure, and opening another PDF afterwards. Browser checks cover clicking away, switching fields, error recovery, mouse wheel and pinch input, and a separate-copy download.
+
+`scripts/create-font-style-fixture.py` and `node scripts/verify-font-style.mjs` verify that short upright fields remain upright, original outlined italics retain their style, and native embedded italic fonts and sizes survive edit/export.
 
 ## Source and licensing
 

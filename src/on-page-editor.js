@@ -10,6 +10,7 @@ export class OnPagePdfEditor extends ExactPdfEditor {
   constructor(engine) { super(engine); this.ocrPages = new Map(); this.ocrHistory = []; this.ocrFrames = new Map(); }
   info(handle,index,textPage) {
     const object=super.info(handle,index,textPage),state=this.stateFor(object),chars=[...object.text];
+    object.box=this.deviceBox(handle,100);
     // PDFium's text extraction collapses consecutive literal space glyphs.
     // Recover their count from the actual glyph sequence before range editing.
     if(state&&state.glyphs.length>chars.length){
@@ -36,8 +37,8 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     const ocr = this.ocrPages.get(page);
     view.kind = ocr || kinds.paths>30 ? 'outlined' : view.objects.length ? 'text' : kinds.images ? 'image' : kinds.forms ? 'nested' : 'empty';
     view.ocrReady = !!ocr;
-    view.objects.forEach(o=>o.mode='exact');
     const nativeObjects=this.objects();
+    view.objects.forEach(o=>{o.mode='exact';o.box=nativeObjects.find(n=>n.index===o.index)?.box||o.box;});
     view.objects=view.objects.flatMap(o=>{
       const native=nativeObjects.find(n=>n.index===o.index),ranges=this.nativeRanges(native);
       return ranges.length<2?[o]:ranges.map(range=>({...o,index:`range:${o.index}:${range.start}:${range.end}`,text:[...native.text].slice(range.start,range.end).join(''),box:this.rangeBounds(native,range.start,range.end)}));
@@ -283,6 +284,104 @@ export class OnPagePdfEditor extends ExactPdfEditor {
   renderCurrent(scale,index=null){
     if(index!==null)return {image:this.inline(index,scale).image};
     const image=this.e.renderPage(scale);return {image:{...image,data:new Uint8ClampedArray(image.data)}};
+  }
+  async isolateContent(page) {
+    // Keep the original graphics state from leaking into generated objects.
+    const pdf=await PDFDocument.load(this.bytes,{updateMetadata:false}),context=pdf.context,node=pdf.getPage(page).node;
+    const contents=node.Contents(),refs=contents instanceof PDFArray?contents.asArray():contents?[contents]:[];
+    const chunks=refs.map(ref=>context.lookup(ref)).map(stream=>{
+      if(!(stream instanceof PDFRawStream))throw new PreservationError('This page has unsupported content streams.');
+      return decodePDFRawStream(stream).decode();
+    });
+    const joined=new Uint8Array(chunks.reduce((n,c)=>n+c.length+1,4));let cursor=0;
+    joined.set([113,10],cursor);cursor+=2;
+    for(const chunk of chunks){joined.set(chunk,cursor);cursor+=chunk.length;joined[cursor++]=10;}
+    joined.set([81,10],cursor);
+    node.set(PDFName.of('Contents'),context.register(context.flateStream(joined)));
+    this.e.open(await pdf.save({useObjectStreams:false,updateFieldAppearances:false}));this.e.loadPage(page);
+  }
+  translateHandle(handle,dx,dy) {
+    const M=this.e.M,p=M._malloc(24);M._FPDFPageObj_GetMatrix(handle,p);
+    const matrix=Array.from(M.HEAPF32.subarray(p>>2,(p>>2)+6));M._free(p);
+    const origin=this.screenPoint(0,0),destination=this.screenPoint(dx,dy);
+    matrix[4]+=destination.x-origin.x;matrix[5]+=destination.y-origin.y;
+    this.setMatrix(handle,matrix);return matrix;
+  }
+  movementPreview(index,scale=1.8) {
+    if(String(index).startsWith('range:'))return {image:this.inline(index,scale).image};
+    const line=String(index).startsWith('ocr:')?this.ocrPages.get(this.e.pageIndex)?.find(o=>o.id===Number(String(index).slice(4))):null;
+    const handles=line?(line.converted?[this.convertedObject(line)?.handle]:this.outlinePaths(line.rect).map(p=>p.handle)):[this.objects().find(o=>o.index===index)?.handle];
+    const image=this.e.renderPage(scale,handles.filter(Boolean));return {image:{...image,data:new Uint8ClampedArray(image.data)}};
+  }
+  async move(index,x,y) {
+    if(!this.bytes)throw new Error('Open a PDF first.');
+    if(!Number.isFinite(x)||!Number.isFinite(y))throw new PreservationError('Choose a valid position on the page.');
+    const page=this.e.pageIndex,current=this.view(),selected=current.objects.find(o=>o.index===index);
+    if(!selected)throw new PreservationError('Select this text box again.');
+    const dx=x-selected.box.x,dy=y-selected.box.y;
+    if(Math.abs(dx)<.005&&Math.abs(dy)<.005)return {...current,movedIndex:index};
+    const destination={...selected.box,x,y};
+    if(x<-.01||y<-.01||x+destination.w>current.width+.01||y+destination.h>current.height+.01)throw new PreservationError('Keep the whole text box inside the page.');
+    const overlaps=(a,b)=>Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x)>1&&Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y)>1;
+    if(current.objects.some(o=>o.index!==index&&overlaps(destination,o.box)&&!overlaps(selected.box,o.box)))throw new PreservationError('This position overlaps another text box. Move it to a clear area.');
+    const oldBytes=this.bytes,snapshot=structuredClone([...this.ocrPages]),scale=1.5,frame=this.e.renderPage(scale),before={...frame,data:new Uint8ClampedArray(frame.data)};
+    const M=this.e.M,normalize=t=>t.replace(/\s+/g,' ').trim(),close=(a,b)=>a.length===b.length&&a.every((v,i)=>Math.abs(v-b[i])<.002);
+    let fragments=[];
+    try {
+      await this.isolateContent(page);this.checkPixels(before,this.e.renderPage(scale),[],scale);
+      let handles=[],original,expected,paths;
+      const line=String(index).startsWith('ocr:')?this.ocrPages.get(page)?.find(o=>o.id===Number(String(index).slice(4))):null;
+      if(line&&!line.converted){
+        paths=this.outlinePaths(line.rect);handles=paths.map(p=>p.handle);
+        if(!handles.length)throw new PreservationError('The original outlined letters could not be located.');
+      }else if(String(index).startsWith('range:')){
+        const [,parent,a,b]=String(index).split(':'),start=Number(a),end=Number(b),object=this.objects().find(o=>o.index===Number(parent));
+        if(!object)throw new PreservationError('Select this field again.');
+        for(const {start:from,end:to}of this.nativeRanges(object)){
+          const handle=this.nativeFragment(object,from,to);if(!handle)continue;
+          fragments.push(handle);M._FPDFPage_InsertObject(this.e.page,handle);
+          if(from===start&&to===end)handles=[handle];
+        }
+        if(!handles.length)throw new PreservationError('This text field could not be isolated.');
+        const tp=M._FPDFText_LoadPage(this.e.page);original=this.info(handles[0],-1,tp);M._FPDFText_ClosePage(tp);
+        if(!M._FPDFPage_RemoveObject(this.e.page,object.handle))throw new PreservationError('This text field could not be moved.');
+        M._FPDFPageObj_Destroy(object.handle);
+      }else{
+        original=line?this.convertedObject(line):this.objects().find(o=>o.index===index);
+        if(!original)throw new PreservationError('The text box could not be located.');
+        handles=[original.handle];
+      }
+      const digest=original?await this.fontDigest(original.font):null;
+      const glyphs=original?JSON.stringify(this.stateFor(original)?.glyphs):null;
+      const translated=handles.map(h=>this.translateHandle(h,dx,dy));expected=translated[0];
+      const movedBounds=handles.map(h=>this.deviceBox(h,100));
+      if(!M._FPDFPage_GenerateContent(this.e.page))throw new PreservationError('The PDF engine could not save this move.');
+      this.e._pageDirty=false;
+      const candidate=this.e.save({noRegen:true});if(!candidate?.length)throw new PreservationError('The moved PDF could not be exported.');
+      this.e.open(candidate);this.e.loadPage(page);fragments=[];
+      let movedIndex=index;
+      if(original){
+        const updated=this.objects().find(o=>normalize(o.text)===normalize(original.text)&&o.fontName===original.fontName&&Math.abs(o.size-original.size)<.0001&&close(o.matrix,expected));
+        if(!updated||await this.fontDigest(updated.font)!==digest||JSON.stringify(this.stateFor(updated)?.glyphs)!==glyphs||!close(updated.fill,original.fill)||!close(updated.stroke,original.stroke)||updated.renderMode!==original.renderMode||Math.abs(updated.strokeWidth-original.strokeWidth)>.0001)throw new PreservationError('Export did not preserve this text’s font, size and glyphs. The move was cancelled.');
+        if(line){line.matrix=updated.matrix;line.rect=this.deviceBox(updated.handle,100);}else movedIndex=updated.index;
+      }else{
+        // A move keeps the original vector lettering; no font substitution is needed.
+        for(let i=0;i<paths.length;i++){
+          const path=this.e.objectAt(paths[i].index),p=M._malloc(24);
+          if(path?.type!==2){M._free(p);throw new PreservationError('An outlined letter did not survive the move.');}
+          M._FPDFPageObj_GetMatrix(path.handle,p);const matrix=Array.from(M.HEAPF32.subarray(p>>2,(p>>2)+6));M._free(p);
+          if(!close(matrix,translated[i]))throw new PreservationError('An outlined letter changed during export.');
+        }
+        line.rect=destination;
+      }
+      this.checkPixels(before,this.e.renderPage(scale),[selected.box,destination,...movedBounds],scale);
+      this.history.push(oldBytes);if(this.history.length>15)this.history.shift();
+      this.ocrHistory.push(snapshot);if(this.ocrHistory.length>15)this.ocrHistory.shift();
+      this.bytes=candidate;this.edits++;
+      return {...this.view(page),movedIndex};
+    }catch(error){
+      this.ocrPages=new Map(snapshot);this.e.open(oldBytes);this.e.loadPage(page);throw error;
+    }
   }
   async apply(index,text) {
     const snapshot=structuredClone([...this.ocrPages]),oldBytes=this.bytes;

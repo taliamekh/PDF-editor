@@ -4,6 +4,12 @@ A browser-local, PDF-only text editor built using BentoPDF's PDFium WebAssembly 
 
 Mouse-wheel scrolling over the page zooms; trackpad pinch and Ctrl/Command+wheel zoom around the pointer. Small trackpad scrolls pan the page. Zoom ranges from 35% to 600%, with higher-resolution rendering after the gesture settles.
 
+Pinch sensitivity is reduced, event-size changes are capped, and animation eases zoom around the pointer. Coarse mouse-wheel ticks zoom more gently; ordinary pixel scrolling pans even at higher speeds. Native gesture scaling is softened too.
+
+Choose **Move & align** to drag a text box. Guides snap its edges and center to the page center and other boxes; hold Alt to turn snapping off or Shift to constrain the drag to one axis. Choose Page or another box under **Align with**, then use Left/Center/Right or Top/Middle/Bottom. Arrow keys nudge a selected box by 1 PDF point (10 with Shift). Moves autosave, export to a separate copy, and support Undo.
+
+Movement translates original text matrices without changing the font, size, character spacing or paint. Moving a field within a combined native object splits its visible fields using their existing font and glyph positions. Outlined fields move their original vector letter paths without substituting a font. Each move is exported, reopened, and checked for glyph/style preservation and pixel changes outside its old and new positions. Page overflow and new text-box collisions roll back safely.
+
 ## Preservation
 
 Text replacement mutates the existing PDFium text object. It preserves the original font resource, font size, text matrix, paint colours and rendering mode. Prefix and suffix character positions are retained, while replacement characters use the original font's glyph widths and observed tracking. The engine exports and reopens each proposed edit, verifies font data using SHA-256, verifies size and formatting, checks nearby text collisions and compares rendered pixels outside the edited region. An unsuccessful check rolls the edit back.
@@ -54,6 +60,8 @@ The deployed app is static: serve `dist/` over HTTPS. The font engine, OCR worke
 `scripts/create-spaced-fixtures.py` adds separated labels/values and a page-level flipped transform. Render `spaced-outlines.pdf` at 216 DPI, then run `node scripts/verify-spaced.mjs` to check field separation, preservation of sibling positions, multiple edits, rollback after an injected export failure, and opening another PDF afterwards. Browser checks cover clicking away, switching fields, error recovery, mouse wheel and pinch input, and a separate-copy download.
 
 `scripts/create-font-style-fixture.py` and `node scripts/verify-font-style.mjs` verify that short upright fields remain upright, original outlined italics retain their style, and native embedded italic fonts and sizes survive edit/export.
+
+`node scripts/verify-movement.mjs` verifies native, separated, italic and outlined moves, page/box alignment and snapping, editing after a move, sibling positions, downloaded/reopened positions, undo, bounds, and rollback after an injected export failure. Browser checks cover pointer dragging, alignment controls, autosaving when changing tools, and PDF downloads.
 
 ## Source and licensing
 

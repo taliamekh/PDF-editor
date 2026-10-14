@@ -1,4 +1,6 @@
 import { ExactPdfEditor, PreservationError } from './pdf-editor.js';
+import { PDFDocument, PDFArray, PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { splitSpacedWords } from './text-blocks.js';
 
 export class OnPagePdfEditor extends ExactPdfEditor {
   static async create() {
@@ -6,6 +8,16 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     return new OnPagePdfEditor(base.e);
   }
   constructor(engine) { super(engine); this.ocrPages = new Map(); this.ocrHistory = []; this.ocrFrames = new Map(); }
+  info(handle,index,textPage) {
+    const object=super.info(handle,index,textPage),state=this.stateFor(object),chars=[...object.text];
+    // PDFium's text extraction collapses consecutive literal space glyphs.
+    // Recover their count from the actual glyph sequence before range editing.
+    if(state&&state.glyphs.length>chars.length){
+      const visible=chars.filter(c=>! /\s/.test(c));
+      if(state.glyphs.filter(g=>g[0]!==32).length===visible.length){let i=0;object.text=state.glyphs.map(g=>g[0]===32?' ':visible[i++]).join('');}
+    }
+    return object;
+  }
   open(bytes) {
     const old = this.ocrPages;
     this.ocrPages = new Map(); this.ocrFrames = new Map();
@@ -25,9 +37,14 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     view.kind = ocr || kinds.paths>30 ? 'outlined' : view.objects.length ? 'text' : kinds.images ? 'image' : kinds.forms ? 'nested' : 'empty';
     view.ocrReady = !!ocr;
     view.objects.forEach(o=>o.mode='exact');
+    const nativeObjects=this.objects();
+    view.objects=view.objects.flatMap(o=>{
+      const native=nativeObjects.find(n=>n.index===o.index),ranges=this.nativeRanges(native);
+      return ranges.length<2?[o]:ranges.map(range=>({...o,index:`range:${o.index}:${range.start}:${range.end}`,text:[...native.text].slice(range.start,range.end).join(''),box:this.rangeBounds(native,range.start,range.end)}));
+    });
     if(ocr) {
       const converted=new Set(ocr.filter(o=>o.converted&&o.text).map(o=>this.convertedObject(o)?.index));
-      view.objects = [...view.objects.filter(o=>!converted.has(o.index)),...ocr.filter(o=>o.text).map(o=>({index:`ocr:${o.id}`,text:o.text,fontName:o.fontName,size:o.size,box:o.rect,mode:'approximate',confidence:o.confidence}))];
+      view.objects = [...view.objects.filter(o=>!converted.has(String(o.index).startsWith('range:')?Number(String(o.index).split(':')[1]):o.index)),...ocr.filter(o=>o.text).map(o=>({index:`ocr:${o.id}`,text:o.text,fontName:o.fontName,size:o.size,box:o.rect,mode:'approximate',confidence:o.confidence}))];
     }
     return view;
   }
@@ -47,6 +64,38 @@ export class OnPagePdfEditor extends ExactPdfEditor {
   setMatrix(handle,matrix) {
     const M=this.e.M,p=M._malloc(24);M.HEAPF32.set(matrix,p>>2);
     const ok=M._FPDFPageObj_SetMatrix(handle,p);M._free(p);if(!ok)throw new Error('Could not position the replacement text.');
+  }
+  nativeRanges(object) {
+    if(!object)return [];
+    const chars=[...object.text],state=this.stateFor(object);
+    if(!state||state.t3||state.glyphs.length!==chars.length||state.glyphs.some(g=>Math.abs(g[2])>.001))return [];
+    const result=[];let start=-1,last=-1;
+    for(let i=0;i<chars.length;i++){
+      if(/\s/.test(chars[i]))continue;
+      if(last>=0&&state.glyphs[i][1]-state.glyphs[last][1]-this.width(object.font,state.glyphs[last][0],object.size)>Math.max(2.5,object.size*.5)){
+        result.push({start,end:last+1});start=i;
+      }
+      if(start<0)start=i;last=i;
+    }
+    if(start>=0)result.push({start,end:last+1});return result;
+  }
+  nativeFragment(object,start,end) {
+    const state=this.stateFor(object),glyphs=state?.glyphs.slice(start,end);
+    if(!glyphs?.length)return null;
+    const M=this.e.M,h=M._FPDFPageObj_CreateTextObj(this.e.doc,object.font,object.size);
+    if(!h)throw new Error('Could not isolate this text field.');
+    const codes=new Uint32Array(glyphs.map(g=>g[0])),p=M._malloc(codes.byteLength);
+    M.HEAPU32.set(codes,p>>2);const ok=M._FPDFText_SetCharcodes(h,p,codes.length);M._free(p);
+    if(!ok){M._FPDFPageObj_Destroy(h);throw new Error('Could not retain the original glyphs.');}
+    if(glyphs.length>1){const positions=new Float32Array(glyphs.slice(1).map(g=>g[1]-glyphs[0][1])),ptr=M._malloc(positions.byteLength);M.HEAPF32.set(positions,ptr>>2);M._FPDFText_SetPositions(h,ptr,positions.length);M._free(ptr);}
+    const matrix=object.matrix.slice();matrix[4]+=matrix[0]*glyphs[0][1];matrix[5]+=matrix[1]*glyphs[0][1];this.setMatrix(h,matrix);
+    M._FPDFPageObj_SetFillColor(h,...object.fill);M._FPDFPageObj_SetStrokeColor(h,...object.stroke);M._FPDFPageObj_SetStrokeWidth(h,object.strokeWidth);M._FPDFTextObj_SetTextRenderMode(h,object.renderMode);
+    return h;
+  }
+  rangeBounds(object,start,end) {
+    const h=this.nativeFragment(object,start,end);
+    if(!h){const box=object.box;return {...box,w:0};}
+    const box=this.deviceBox(h,100);this.e.M._FPDFPageObj_Destroy(h);return box;
   }
   nativeText(text,fontName,size,rect=null,rgba=[0,0,0,255],tracking=0) {
     const M=this.e.M,fp=this.e._allocStr(fontName),h=M._FPDFPageObj_NewTextObj(this.e.doc,fp,size);M._free(fp);
@@ -129,7 +178,7 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     if(!frame)throw new Error('Recognize this page again.');
     const native=this.objects().map(o=>this.deviceBox(o.handle,100));
     const overlaps=(a,b)=>Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x)>1&&Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y)>1;
-    const records=lines.filter(l=>l.text.trim()&&l.rect.w>1&&l.rect.h>1&&!native.some(b=>overlaps(l.rect,b))&&this.outlinePaths(l.rect).length>0).map((line,id)=>({...line,id,...this.matchFont(line,frame),converted:false,rgba:[0,0,0,255]}));
+    const records=lines.flatMap(splitSpacedWords).filter(l=>l.text.trim()&&l.rect.w>1&&l.rect.h>1&&!native.some(b=>overlaps(l.rect,b))&&this.outlinePaths(l.rect).length>0).map((line,id)=>({...line,id,...this.matchFont(line,frame),converted:false,rgba:[0,0,0,255]}));
     this.ocrPages.set(this.e.pageIndex,records);
     this.ocrFrames.delete(this.e.pageIndex);
     return this.view();
@@ -148,8 +197,8 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     }
     M._free(p);return result;
   }
-  convertedObject(line) {return this.objects().find(o=>o.text===line.text&&line.matrix&&o.matrix.every((v,i)=>Math.abs(v-line.matrix[i])<.001));}
-  approximateInline(line) {
+  convertedObject(line) {const normalize=t=>t.replace(/\s+/g,' ').trim();return this.objects().find(o=>normalize(o.text)===normalize(line.text)&&line.matrix&&o.matrix.every((v,i)=>Math.abs(v-line.matrix[i])<.001));}
+  approximateInline(line,scale=1.8) {
     let h,hidden;
     if(line.converted){const obj=this.convertedObject(line);if(!obj)throw new Error('This text block could not be located.');h=obj.handle;hidden=[h];}
     else {
@@ -161,15 +210,26 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     }
     const tp=this.e.M._FPDFText_LoadPage(this.e.page),info=this.info(h,-1,tp);this.e.M._FPDFText_ClosePage(tp);
     const spec={index:`ocr:${line.id}`,text:line.text,mode:'approximate',fontName:line.fontName,size:line.size,rawSize:line.size,color:line.rgba,matrix:this.screenMatrix(info.matrix),fontData:this.fontBytes(info.font),tracking:0};
-    const img=this.e.renderPage(1.8,hidden);spec.image={...img,data:new Uint8ClampedArray(img.data)};
+    const img=this.e.renderPage(scale,hidden);spec.image={...img,data:new Uint8ClampedArray(img.data)};
     if(!line.converted)this.e.M._FPDFPageObj_Destroy(h);
     return spec;
   }
-  inline(index) {
+  inline(index,scale=1.8) {
+    if(String(index).startsWith('range:')){
+      const [,parent,a,b]=String(index).split(':'),start=Number(a),end=Number(b),object=this.objects().find(o=>o.index===Number(parent));
+      if(!object)throw new Error('Select this field again.');
+      const spec=this.inline(Number(parent),scale),M=this.e.M,fragment=this.nativeFragment(object,start,end),siblings=[];
+      try{
+        const tp=M._FPDFText_LoadPage(this.e.page),info=this.info(fragment,-1,tp);M._FPDFText_ClosePage(tp);
+        for(const [from,to]of[[0,start],[end,[...object.text].length]]){const h=this.nativeFragment(object,from,to);if(h){M._FPDFPage_InsertObject(this.e.page,h);siblings.push(h);}}
+        const img=this.e.renderPage(scale,[object.handle]);
+        return {...spec,index,text:[...object.text].slice(start,end).join(''),matrix:this.screenMatrix(info.matrix),image:{...img,data:new Uint8ClampedArray(img.data)}};
+      }finally{for(const h of siblings){M._FPDFPage_RemoveObject(this.e.page,h);M._FPDFPageObj_Destroy(h);}if(fragment)M._FPDFPageObj_Destroy(fragment);}
+    }
     if(String(index).startsWith('ocr:')) {
       const line=this.ocrPages.get(this.e.pageIndex)?.find(o=>o.id===Number(String(index).slice(4)));
       if(!line)throw new Error('Select this text again.');
-      return this.approximateInline(line);
+      return this.approximateInline(line,scale);
     }
     const object=this.objects().find(o=>o.index===index);
     if(!object)throw new Error('Select this text again.');
@@ -180,12 +240,22 @@ export class OnPagePdfEditor extends ExactPdfEditor {
       if(paragraph){const run=paragraph.runs.findIndex(r=>Math.abs(r.size-object.size)<.01&&r.text.includes(object.text));const bytes=this.e.synthRunFont(paragraph.id,Math.max(0,run));if(bytes&&bytes!=='dishonest')fontData=bytes;}
     } catch {}
     const state=this.stateFor(object),gaps=state?.glyphs.slice(0,-1).map((g,i)=>state.glyphs[i+1][1]-g[1]-this.width(object.font,g[0],object.size)).sort((a,b)=>a-b)||[];
-    const image=this.e.renderPage(1.8,[object.handle]);
+    const image=this.e.renderPage(scale,[object.handle]);
     return {index,text:object.text,mode:'exact',fontName:object.fontName.replace(/^[A-Z]{6}\+/,''),size:object.size*Math.hypot(object.matrix[2],object.matrix[3]),rawSize:object.size,color:object.fill,matrix:this.screenMatrix(object.matrix),tracking:gaps.length?gaps[Math.floor(gaps.length/2)]:0,fontData,image:{...image,data:new Uint8ClampedArray(image.data)}};
+  }
+  renderCurrent(scale,index=null){
+    if(index!==null)return {image:this.inline(index,scale).image};
+    const image=this.e.renderPage(scale);return {image:{...image,data:new Uint8ClampedArray(image.data)}};
   }
   async apply(index,text) {
     const snapshot=structuredClone([...this.ocrPages]),oldBytes=this.bytes;
-    const result=String(index).startsWith('ocr:')?await this.applyApproximate(index,text):await super.apply(index,text);
+    let result;
+    if(String(index).startsWith('range:')){
+      const [,parent,a,b]=String(index).split(':'),start=Number(a),end=Number(b),object=this.objects().find(o=>o.index===Number(parent));
+      if(!object)throw new Error('Select this field again.');
+      const chars=[...object.text],range={start,end:start+[...text].length,box:this.rangeBounds(object,start,end),otherBoxes:this.nativeRanges(object).filter(r=>r.start!==start).map(r=>this.rangeBounds(object,r.start,r.end))};
+      result=await super.apply(Number(parent),chars.slice(0,start).join('')+text+chars.slice(end).join(''),{lockSuffix:{oldEnd:end,newEnd:range.end},range});
+    }else result=String(index).startsWith('ocr:')?await this.applyApproximate(index,text):await super.apply(index,text);
     if(this.bytes!==oldBytes){this.ocrHistory.push(snapshot);if(this.ocrHistory.length>15)this.ocrHistory.shift();}
     return result;
   }
@@ -196,10 +266,24 @@ export class OnPagePdfEditor extends ExactPdfEditor {
     if(text===line.text)return this.view();
     const M=this.e.M,oldBytes=this.bytes,snapshot=structuredClone([...this.ocrPages]);
     const scale=Math.min(1.5,4096/Math.max(this.e.pageWidth,this.e.pageHeight)),raw=this.e.renderPage(scale),before={...raw,data:new Uint8ClampedArray(raw.data)};
-    const removed=line.converted?[this.convertedObject(line)].filter(Boolean):this.outlinePaths(line.rect);
-    if(!removed.length)throw new PreservationError('The original outlined letters could not be isolated safely. This edit was cancelled.');
-    let newHandle=null,bounds=line.rect;
+    let removed=[],newHandle=null,bounds=line.rect;
     try {
+      // Isolate inherited page transforms before appending a new text object.
+      // This changes only the in-memory working copy, never the uploaded file.
+      const document=await PDFDocument.load(oldBytes,{updateMetadata:false});
+      const node=document.getPage(page).node,contents=node.Contents();
+      const streams=contents instanceof PDFArray?contents.asArray().map(ref=>document.context.lookup(ref)):[contents];
+      const chunks=streams.filter(Boolean).map(stream=>{if(!(stream instanceof PDFRawStream))throw new Error('The original page stream could not be isolated.');return decodePDFRawStream(stream).decode();});
+      const combined=new Uint8Array(chunks.reduce((n,c)=>n+c.length+1,4));
+      combined.set([113,10]);let offset=2;
+      for(const chunk of chunks){combined.set(chunk,offset);offset+=chunk.length;combined[offset++]=10;}
+      combined.set([81,10],offset);
+      node.set(PDFName.Contents,document.context.register(document.context.flateStream(combined)));
+      const working=await document.save({useObjectStreams:false,updateFieldAppearances:false});
+      this.e.open(working);this.e.loadPage(page);
+      this.checkPixels(before,this.e.renderPage(scale),[],scale);
+      removed=line.converted?[this.convertedObject(line)].filter(Boolean):this.outlinePaths(line.rect);
+      if(!removed.length)throw new PreservationError('The original outlined letters could not be isolated safely. This edit was cancelled.');
       if(text) {
         newHandle=this.nativeText(text,line.fontName,line.size,line.rect,line.rgba);
         bounds=this.deviceBox(newHandle,100);
@@ -211,9 +295,10 @@ export class OnPagePdfEditor extends ExactPdfEditor {
       for(const o of removed){if(!M._FPDFPage_RemoveObject(this.e.page,o.handle))throw new Error('Could not remove the outlined letters.');M._FPDFPageObj_Destroy(o.handle);}
       if(newHandle){M._FPDFPage_InsertObject(this.e.page,newHandle);newHandle=null;}
       if(!M._FPDFPage_GenerateContent(this.e.page))throw new Error('The approximate edit could not be saved.');
+      this.e._pageDirty=false;
       const candidate=this.e.save({noRegen:true});if(!candidate?.length)throw new Error('The PDF could not be exported.');
       this.e.open(candidate);this.e.loadPage(page);
-      if(text){const updated=this.objects().find(o=>{const b=this.deviceBox(o.handle,100);return o.text===text&&o.fontName===line.fontName&&Math.abs(o.size-line.size)<.001&&Math.abs(b.x-bounds.x)<.1&&Math.abs(b.y-bounds.y)<.1;});if(!updated)throw new PreservationError('The replacement did not survive PDF export.');line.matrix=updated.matrix;line.rect=bounds;}
+      if(text){const normalize=t=>t.replace(/\s+/g,' ').trim();const updated=this.objects().find(o=>{const b=this.deviceBox(o.handle,100);return normalize(o.text)===normalize(text)&&this.stateFor(o)?.glyphs.length===[...text].length&&o.fontName===line.fontName&&Math.abs(o.size-line.size)<.001&&Math.abs(b.x-bounds.x)<.1&&Math.abs(b.y-bounds.y)<.1;});if(!updated)throw new PreservationError('The replacement did not survive PDF export.');line.matrix=updated.matrix;line.rect=bounds;}
       this.checkPixels(before,this.e.renderPage(scale),[...removed.map(o=>o.box||line.rect),line.rect,bounds],scale);
       line.converted=true;line.text=text;
       this.history.push(oldBytes);if(this.history.length>15)this.history.shift();this.bytes=candidate;this.edits++;

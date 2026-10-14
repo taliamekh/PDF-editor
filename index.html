@@ -11,7 +11,7 @@
   <body>
     <header class="topbar">
       <a class="brand" href="./" aria-label="PDF Text Studio home"><span class="brand-mark">T<span>↗</span></span><span>text<span class="brand-light">studio</span><span class="brand-tag">PDF</span></span></a>
-      <div class="header-actions"><span class="local-badge"><i></i> Private, in your browser</span><button id="open-btn" class="button secondary">Open PDF <span aria-hidden="true">↗</span></button><button id="download-btn" class="button primary" disabled>Download PDF <span aria-hidden="true">↓</span></button></div>
+      <div class="header-actions"><span class="local-badge"><i></i> Private, in your browser</span><button id="open-btn" class="button secondary">Open PDF <span aria-hidden="true">↗</span></button><button id="download-btn" class="button primary" disabled>Download copy <span aria-hidden="true">↓</span></button></div>
       <input id="file-input" type="file" accept="application/pdf,.pdf" hidden />
     </header>
 
@@ -29,9 +29,9 @@
 
       <section id="editor" class="editor hidden direct-editor" aria-label="PDF text editor">
         <div class="document-bar"><div class="file-info"><span class="file-icon">PDF</span><div><strong id="file-name"></strong><span id="edit-count">Original document</span></div></div><div class="document-controls"><button id="undo-btn" class="icon-button" title="Undo last edit" aria-label="Undo last edit" disabled>↶</button><span class="divider"></span><button id="prev-page" class="icon-button" aria-label="Previous page">‹</button><span id="page-count"></span><button id="next-page" class="icon-button" aria-label="Next page">›</button><span class="divider"></span><button id="zoom-out" class="icon-button" aria-label="Zoom out">−</button><span id="zoom-label">100%</span><button id="zoom-in" class="icon-button" aria-label="Zoom in">+</button></div></div>
-        <div class="on-page-toolbar"><span id="mode-label" class="mode-pill">Original font &amp; size preserved</span><div id="selection-toolbar" class="selection-toolbar hidden"><strong id="selected-font"></strong><span id="selected-mode" class="mode-pill">Original style locked</span><button id="save-edit" class="button primary small-button" disabled>Save edit <span aria-hidden="true">✓</span></button></div><span id="selection-help" class="selection-help">Click text on the page to place your cursor.</span></div>
+        <div class="on-page-toolbar"><span id="mode-label" class="mode-pill">Original font &amp; size preserved</span><div id="selection-toolbar" class="selection-toolbar hidden"><strong id="selected-font"></strong><span id="selected-mode" class="mode-pill">Original style locked</span></div><span id="selection-help" class="selection-help">Click away to autosave · original file unchanged</span></div>
         <div id="edit-feedback" class="inline-feedback hidden" role="status"></div>
-        <div class="editor-body"><div id="stage" class="stage"><div class="stage-tip"><span class="tiny-square"></span> Click text and type right here</div><div id="paper" class="paper"><canvas id="pdf-canvas" aria-label="PDF page"></canvas><div id="text-overlay" class="text-overlay"></div><div id="inline-layer" class="inline-layer"></div></div><div id="page-notice" class="page-notice hidden"></div></div></div>
+        <div class="editor-body"><div id="stage" class="stage"><div class="stage-tip"><span class="tiny-square"></span> Click a field to edit · mouse wheel or trackpad pinch to zoom</div><div id="paper" class="paper"><canvas id="pdf-canvas" aria-label="PDF page"></canvas><div id="text-overlay" class="text-overlay"></div><div id="inline-layer" class="inline-layer"></div></div><div id="page-notice" class="page-notice hidden"></div></div></div>
       </section>
       <div id="global-feedback" class="global-feedback hidden" role="alert"></div>
     </main>

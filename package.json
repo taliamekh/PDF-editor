@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "bentopdf-pdfium": "file:vendor/bentopdf-pdfium-813903c93c75.tgz",
+    "pdf-lib": "1.17.1",
     "tesseract.js": "7.0.0"
   },
   "devDependencies": {

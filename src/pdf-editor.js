@@ -150,7 +150,7 @@ export class ExactPdfEditor {
     return JSON.stringify(parts);
   }
 
-  preservePositions(before, after, oldText, newText, object) {
+  preservePositions(before, after, oldText, newText, object, lockSuffix = false) {
     const old = [...oldText], fresh = [...newText];
     if (before.glyphs.length !== old.length || after.glyphs.length !== fresh.length) throw new PreservationError('This text uses a complex character encoding. This version cannot edit it with verified preservation.');
     if (before.glyphs.some(g => Math.abs(g[2]) > 0.001)) throw new PreservationError('This text contains several baselines inside one object. Exact editing is not available for this block yet.');
@@ -177,9 +177,10 @@ export class ExactPdfEditor {
     for (let i = Math.max(1, prefix + 1); i < fresh.length; i++) positions[i] = positions[i - 1] + this.width(object.font, after.glyphs[i - 1][0], object.size) + tracking;
     if (suffix) {
       const oldStart = old.length - suffix, newStart = fresh.length - suffix;
-      const origin = positions[newStart];
+      const origin = lockSuffix === true ? before.glyphs[oldStart][1] : positions[newStart];
       for (let i = 0; i < suffix; i++) positions[newStart + i] = origin + before.glyphs[oldStart + i][1] - before.glyphs[oldStart][1];
     }
+    if(lockSuffix&&typeof lockSuffix==='object')for(let i=lockSuffix.newEnd;i<fresh.length;i++)positions[i]=before.glyphs[lockSuffix.oldEnd+i-lockSuffix.newEnd][1];
     const p = M._malloc((fresh.length - 1) * 4);
     M.HEAPF32.set(positions.subarray(1), p >> 2);
     const ok = M._FPDFText_SetPositions(object.handle, p, fresh.length - 1);
@@ -212,7 +213,7 @@ export class ExactPdfEditor {
     return result;
   }
 
-  async apply(index, newText) {
+  async apply(index, newText, options = {}) {
     if (!this.bytes) throw new Error('Open a PDF first.');
     if (newText.length > 4000 || /[\r\n\u0000]/.test(newText)) throw new PreservationError('Edit one existing text line at a time, with no line breaks (maximum 4,000 characters).');
     const page = this.e.pageIndex, oldBytes = this.bytes, objects = this.objects();
@@ -248,9 +249,11 @@ export class ExactPdfEditor {
           const shape = this.glyphShape(original.font, freshState.glyphs[i]?.[0], original.size);
           if (!shape || (shape === notdef && c !== ' ')) throw new PreservationError(`The original embedded font cannot render “${c}”. Try a character already in this PDF. No replacement font will be used.`);
         }
-        this.preservePositions(originalState, freshState, original.text, newText, original);
+        this.preservePositions(originalState, freshState, original.text, newText, original, options.lockSuffix);
       }
       const bounds = newText ? this.deviceBox(original.handle) : original.box;
+      const editedBounds = options.range ? this.rangeBounds(original,options.range.start,options.range.end) : bounds;
+      if(options.range && options.range.otherBoxes.some(box=>overlaps(editedBounds,box)&&!overlaps(options.range.box,box)))throw new PreservationError('This text reaches the next field. Shorten it to keep the existing spacing.');
       if (newText && (bounds.x < -1 || bounds.y < -1 || bounds.x + bounds.w > this.e.pageWidth + 1 || bounds.y + bounds.h > this.e.pageHeight + 1)) throw new PreservationError('The replacement extends beyond this page. Shorten the text to keep its original size.');
       if (objects.some(o => o.index !== index && o.text && overlaps(bounds,o.box) && !overlaps(original.box,o.box))) throw new PreservationError('The replacement overlaps nearby text. Shorten it to keep the original font and size.');
       if (!M._FPDFPage_GenerateContent(this.e.page)) throw new PreservationError('The PDF engine could not save this edit.');
@@ -266,7 +269,7 @@ export class ExactPdfEditor {
         if (!afterObject) throw new PreservationError('Export changed another text object. The edit was cancelled.');
       }
       if (!newText && afterObjects.some(o=>o.text===original.text && sameArray(o.matrix,original.matrix))) throw new PreservationError('The original text was not completely removed. The deletion was cancelled.');
-      this.checkPixels(beforeImage, this.e.renderPage(scale), [original.box,bounds], scale);
+      this.checkPixels(beforeImage, this.e.renderPage(scale), options.range?[options.range.box,editedBounds]:[original.box,bounds], scale);
       this.history.push(oldBytes);
       if (this.history.length > 15) this.history.shift();
       this.bytes = candidate;

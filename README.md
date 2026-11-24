@@ -1,6 +1,19 @@
 # PDF Text Studio
 
+Canonical source: [taliamekh/PDF-editor](https://github.com/taliamekh/PDF-editor), branch `main`. Future development happens in this repository. The existing source history, including the current deployed editor, is preserved here.
+
 A browser-local, PDF-only text editor built using BentoPDF's PDFium WebAssembly package and engine wrapper. Click a field and delete or type directly at its position on the page. Clicking away autosaves to an in-memory edited copy; Enter also saves and Escape cancels. Download copy saves a pending edit and creates a separate `-edited-copy.pdf` file. The original document is never uploaded or overwritten.
+
+## Development
+
+```sh
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+Run `pnpm build` for the production build. Generate the downloadable corresponding source with `python scripts/package-source.py` before the final build when application source changes. See the validation section for synthetic PDF fixtures and regression checks.
+
+The hosted site remains [PDF Text Studio](https://pdf-text-studio-talia.taliamekhayche.chatgpt.site/). Its existing Sites identity is retained in `.openai/hosting.json`; GitHub pushes and Sites deployments are separate operations.
 
 Mouse-wheel scrolling over the page zooms; trackpad pinch and Ctrl/Command+wheel zoom around the pointer. Small trackpad scrolls pan the page. Zoom ranges from 35% to 600%, with higher-resolution rendering after the gesture settles.
 

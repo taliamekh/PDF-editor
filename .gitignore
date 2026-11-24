@@ -3,4 +3,9 @@ dist/
 .sites-runtime/
 .sites-cache/
 test-output/
+inputs/
+tmp/
+.env
+.env.*
+!.env.example
 *.log
